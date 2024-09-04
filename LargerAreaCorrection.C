@@ -1,0 +1,259 @@
+#include "Riostream.h"
+#include <stdio.h>
+#include <TH2.h>
+#include <TProfile.h>
+#include <TStyle.h>
+#include <TCanvas.h>
+#include <TMath.h>
+#include <TTree.h>
+#include <TKey.h>
+#include <TFile.h>
+#include <TLegend.h>
+#include <TGraphErrors.h>
+#include <TF1.h>
+#include <TSystem.h>
+#include <TROOT.h>
+#include <algorithm>
+#include <string>
+#include <iostream>
+#include <iomanip>
+#include <vector>
+#include <ctime>
+#include <cmath>
+
+#include "Fit/Fitter.h"
+#include "Fit/BinData.h"
+#include "TVector.h"
+#include <TGraph.h>
+
+
+TH1F* NoiseReduce(TH1F* hist, int threshold){
+    TH1F *filtered_hist = new TH1F("filtered_hist","Filtered Histogram 1D",hist->GetNbinsX(), hist->GetXaxis()->GetXmin(), hist->GetXaxis()->GetXmax());
+    int count = 0;
+
+    for (int bin = 1; bin <= hist->GetNbinsX(); ++bin) {
+        if (bin > threshold) {
+            filtered_hist->SetBinContent(bin, hist->GetBinContent(bin));
+            if (hist->GetBinContent(bin) > 0)
+            {count++;}
+        }
+        else{
+            filtered_hist->SetBinContent(bin, 0);
+        }
+    }
+    std::cout<<"the number of pixel above the threshold is "<<count<<std::endl;
+    return filtered_hist;
+}
+
+TH1F* RebinHist(TH1F* hist, int rebin_size){
+    //TH1F *rebinned_hist = new TH1F("rebinned_hist","Rebinned Histogram 1D",hist->GetNbinsX(), hist->GetXaxis()->GetXmin(), hist->GetXaxis()->GetXmax());
+    TH1F *hist_cope = (TH1F*) hist->Clone("Rebinned_1D");
+    TH1F *rebinned_hist = (TH1F*)hist_cope->Rebin(rebin_size);
+    //rebinned_hist->SetName("Rebinned Hist");
+
+    return rebinned_hist;
+}
+
+double SelectMiddle40Percent(TF1* gaussFit){
+    double mean = gaussFit->GetParameter(1);
+    double sigma = gaussFit->GetParameter(2);
+
+//FWHM/2.35 = delta
+//average ADC
+   //1/2peak
+    double integral = gaussFit->Integral(mean - 4*sigma, mean + 4*sigma);
+    double target_area = integral * 0.4;
+    double low_bound = mean;
+    double high_bound = mean;
+
+    for (int i = 1; i <= 1000; ++i) {
+        double x = mean - 4*sigma + i * (8*sigma / 1000.0);
+        double test_area = gaussFit->Integral(x, mean);
+        if (test_area <= target_area / 2) {
+            low_bound = x;
+            break;
+        }
+    }
+
+    for (int i = 1; i <= 1000; ++i) {
+        double y = mean + 4*sigma - i * (8*sigma / 1000.0);
+        double test_area = gaussFit->Integral(mean,y);
+        if (test_area <= target_area / 2) {
+            high_bound = y;
+            break;
+        }
+    }
+
+    double sum40percentArea = gaussFit->Integral(low_bound,high_bound);
+    double averagedADC = sum40percentArea/(high_bound-low_bound);
+
+    return averagedADC;
+}
+
+std::pair<int, int> getMaxPosition(TH2F* hist){
+    int binX, binY;
+    double maxValue = 0;
+
+    for (int x=1; x<= hist->GetNbinsX(); x++){
+        for (int y=1; y<= hist->GetNbinsY(); y++){
+            double binContent = hist->GetBinContent(x,y);
+            if (binContent > maxValue){
+                maxValue = binContent;
+                binX = x;
+                binY = y;
+            }
+        }
+    }
+
+    return std::make_pair(binX, binY);
+}
+
+double IntegralRegion(TH2F* hist, int binX, int binY, int rangeX, int rangeY){
+    int startX = max((binX-(rangeX/2)),1);
+    int startY = max((binY-(rangeY/2)),1);
+
+    int endX = min((binX+(rangeX/2)),hist->GetNbinsX());
+    int endY = min((binY+(rangeY/2)),hist->GetNbinsY());
+
+    double integral = 0;
+    for (int x = startX; x<= endX; x++){
+        for (int y = startY; y<= endY; y++){
+            integral += hist->GetBinContent(x,y);
+        }
+    }
+    return integral;
+}
+
+using namespace std;
+
+int LargerAreaCorrection() {
+    gROOT->Reset();
+    TFile *file = TFile::Open("out.root");
+
+    //int rebin_size = 10;
+    int range = 30;
+    int neg_range = -range;
+
+    int nBinsX = 7;
+    int nBinsY = 7;
+    double xMin = -3.5;
+    double xMax = 3.5;
+    double yMin = -3.5;
+    double yMax = 3.5;
+
+    int selection_X = 140;
+    int selection_Y = 80;
+
+    TH2F *ori_hist2D = new TH2F("original_hist2D", "Original 2D Histogram", nBinsX, xMin, xMax, nBinsY, yMin, yMax);
+
+/*
+    std::string objectName = "src_Image21074855-" + std::to_string(30) + std::to_string(30) + "-0.tiff 1D;1";
+    TH1F *Image = (TH1F*) file->Get(objectName.c_str());
+    if (!Image) {
+        cerr << "Failed to retrieve histogram: " << objectName << endl;
+        return 1;
+    }
+*/
+    int XBin = 1;
+    int YBin = 1;
+    for (int i = neg_range; i<=range; i+=10) {
+        for (int j = neg_range; j<=range; j+=10){
+            std::string objectName = "src_Image21074855-" + std::to_string(i) + std::to_string(j) + "-0.tiff;1";
+            TH2F *Image = (TH2F*) file->Get(objectName.c_str());
+            if (!Image) {
+                cerr << "Failed to retrieve histogram: " << objectName << endl;
+                return 1;
+            }
+
+            std::pair<int, int> MaxPosition = getMaxPosition(Image);
+            int MaxX = MaxPosition.first;
+            int MaxY = MaxPosition.second;
+            double integral_value = IntegralRegion(Image, MaxX, MaxY, selection_X, selection_Y);
+            //std::cout<<"integral value for the position X:"<< i << " and position Y: " << j << " is " <<integral_value <<std::endl;
+            //std::cout<<"the max point X position is "<<MaxX << " and the Y position is "<< MaxY << std::endl;
+            //filtered_hist->Draw();
+            //gaussFit->Draw("same");
+
+            ori_hist2D->SetBinContent(XBin,YBin,integral_value);
+            YBin++;
+        }
+        XBin++;
+        YBin = 1;
+    }
+
+    double reference = ori_hist2D->GetBinContent(4,4);
+
+    TH2F* correction_matrix = new TH2F("correction_matrix", "correction_matirx", nBinsX, xMin, xMax, nBinsY, yMin, yMax);
+
+    for (int XBin = 1; XBin <=7; XBin++) {
+        for (int YBin = 1; YBin <= 7; YBin++){
+            double current_value = ori_hist2D->GetBinContent(XBin,YBin);
+            double ratio = current_value/reference;
+
+            std::cout<<"ratio for the position X:"<< XBin << " and position Y: " << YBin << " is " <<ratio <<std::endl;
+            correction_matrix->SetBinContent(XBin,YBin,ratio);
+        }
+    }
+
+    //TFile *correction_matrix_file = TFile::Open("correction_matrix.root");
+    //TH2F *Image = (TH2F*) file->Get(objectName.c_str());
+
+
+    TCanvas *Integral_canvas_Test = new TCanvas("Integral_canvas", "Integral Hist",800 ,600);
+    TCanvas *Correction_canvas_Test = new TCanvas("Correction_canvas", "Correction Hist",800 ,600);
+
+    Integral_canvas_Test->cd();
+    ori_hist2D->Draw("colz");
+    TFile *ori_2D_file_Test = TFile::Open("integral_distribution_Test.root", "RECREATE");
+    ori_hist2D->Write();
+    ori_2D_file_Test->Close();
+
+//    Correction_canvas->cd();
+//    correction_matrix->Draw("colz");
+    TFile *correction_matrix_file_Test = TFile::Open("correction_matrix_Test.root","RECREATE");
+    correction_matrix->Write();
+    correction_matrix_file_Test->Close();
+
+/*
+    std::string input;
+    std::cout << "Type 'y' to remove hist:";
+    std::cin >> input;
+*/
+//    if (input == 'y'){
+//        std::cout << "Deleting hist objects..." << std::endl;
+        delete ori_hist2D;
+        delete correction_matrix;
+        delete ori_2D_file_Test;
+        delete correction_matrix_file_Test;
+        delete Integral_canvas_Test;
+        delete Correction_canvas_Test;
+//    }
+
+
+
+/*
+    TCanvas *filter_canvas = new TCanvas("filter_canvas", "Filtered Hist",800 ,600);
+    TCanvas *rebin_canvas = new TCanvas("rebin_canvas", "Rebinned Hist",800 ,600);
+
+    filter_canvas->cd();
+    TH1F *filtered_hist = NoiseReduce(Image,filter_threshold);
+    TF1 *gaussFit = new TF1("gaussFit", "gaus", filter_threshold, filtered_hist->GetXaxis()->GetXmax());
+    filtered_hist->Fit(gaussFit, "Q");
+    filtered_hist->Draw();
+    gaussFit->Draw("same");
+
+    rebin_canvas->cd();
+    TH1F *rebinned_hist = RebinHist(filtered_hist, rebin_size);
+    rebinned_hist->Draw();
+*/
+
+
+            //double ADC_processed = SelectMiddle40Percent(gaussFit);
+            //delete gaussFit;
+            //delete filtered_hist;
+
+
+    //ori_hist2D->Draw("colz");
+
+    return 1;
+}

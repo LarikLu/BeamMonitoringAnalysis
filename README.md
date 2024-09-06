@@ -33,7 +33,7 @@ After checking my code, I believe it functions correctly. The ADC vs. R root fil
 
 ## Further Investigation
 
-Upon reviewing the original 1D distribution root files for these two positions, I found significant differences in their distribution patterns. While the ADC values for (i-30, j30) remain relatively symmetric around 0, the values for (i-20, j-30) are skewed towards the positive region, leading to the rising trend over R.
+Upon reviewing the original 1D distribution root files for these two positions (check out2.root), I found significant differences in their distribution patterns. While the ADC values for (i-30, j30) remain relatively symmetric around 0, the values for (i-20, j-30) are skewed towards the positive region, leading to the rising trend over R.
 
 ## Recommendations for Improvement
 
